@@ -87,3 +87,49 @@ The symlink decision was the most debated. The extreme position ("follow nothing
 - **What surprised us:** `entry.is_symlink()` on macOS returns `True` for dangling symlinks instead of raising `OSError`. The `except OSError` path we wrote for dangling symlinks was never triggered. This is macOS-specific behaviour — Linux raises `OSError` for `is_symlink()` on dangling links. We fixed the warning path to handle both cases.
 - **What became simpler than expected:** Permission error handling. `os.scandir()` raises `PermissionError` at the directory level, not per-file. A single `try/except PermissionError` around `os.scandir(path)` catches the common case (a directory you can't enter). Per-file permission errors are handled by `entry.stat()` failing.
 - **What assumption turned out to be wrong:** We initially assumed the Scanner should not record symlinks as warnings — just skip them silently. But during implementation, we realised that "silent skipping" violates the philosophy of transparency. The user should know if their scan excluded entries. This matches the project's core principle: "The application assists. It never hides decisions."
+
+---
+
+## Commit 4 — Shared Data Models
+
+**Date:** 2026-07-23
+
+**Summary:** Defined the shared vocabulary of the application — FileCategory, SuggestedAction, AnalysisResult, Recommendation, and CategorySummary — as standalone dataclasses and enums before implementing the Classifier or Planner.
+
+### Why we designed it this way
+
+API-first engineering. The Classifier, Planner, UI, and Executor all depend on these types. Defining them upfront prevents two engineers from producing incompatible objects and makes the module interfaces explicit before implementation begins.
+
+### Key design decisions
+
+1. **FileCategory is an enum, not a string.** String-based categories introduce typos, inconsistent casing, and non-exhaustive matching. An enum gives compiler-checked exhaustiveness and a single source of truth.
+
+2. **SuggestedAction is its own file, separate from Recommendation.** Actions appear in recommendations, audit entries, CleanupAction, and CLI prompts. Keeping them separate prevents circular imports and keeps the domain language clean.
+
+3. **Recommendation.action is Optional.** The Planner may decline to make a recommendation (e.g., for UNKNOWN files with low confidence). `None` is explicit: "I don't know." No UNCERTAIN enum member needed — the absence of a value is the signal.
+
+4. **CategorySummary is a pure data transformation.** The UI should render data, not compute it. The `group_by_category()` function is a pure function: input analysis results, output sorted summaries. Testable without rendering.
+
+5. **AnalysisResult is frozen.** Once a file is classified, that classification should not change accidentally. Frozen dataclass enforces this at runtime.
+
+### What we rejected
+
+- **SuggestedAction.UNCERTAIN.** The user explicitly rejected this: "absence of value" via `Optional[SuggestedAction]` is clearer than an enum member meaning "uncertain."
+- **Storing analysis or recommendation inside FileMetadata.** FileMetadata remains purely objective filesystem facts.
+- **Splitting CLI prematurely.** The UI module is deferred until it naturally grows large enough to justify the split.
+
+### Dependency graph enforced
+
+```
+category.py           → nothing
+action.py             → nothing
+analysis.py           → metadata.py, category.py
+recommendation.py     → action.py
+category_summary.py   → category.py, analysis.py
+```
+
+Nothing in `models/` imports from `core/` or `cli/`.
+
+### Engineering lesson learned
+
+Defining the vocabulary before implementing behaviour is uncomfortable — it feels like you're not making progress. But it surfaces design disagreements early (at the type level) rather than during integration (at the runtime level). The discussion about `SuggestedAction.UNCERTAIN` vs `Optional[SuggestedAction]` was resolved in five minutes because the model was concrete enough to debate.
