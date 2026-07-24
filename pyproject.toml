@@ -26,6 +26,9 @@ classifiers = [
 Homepage = "https://github.com/kaustubh/mac-cleanup"
 Repository = "https://github.com/kaustubh/mac-cleanup"
 
+[project.scripts]
+maccleanup = "cli.main:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cli*", "core*", "models*", "report*", "config*", "utils*"]
