@@ -3,6 +3,7 @@ CLI entry point for MacCleanUp.
 
 Owns:
 - argparse
+- path resolution (accepts "Downloads" as well as "~/Downloads")
 - stdout / stderr
 - user confirmation
 - exit codes
@@ -26,6 +27,40 @@ EXIT_INVALID_ARGS = 2
 EXIT_ERROR = 3
 
 
+def _resolve_path(value: str) -> Path:
+    """Resolve a user-supplied path.
+
+    Accepts multiple forms:
+    - Absolute: ``/Users/name/Downloads``
+    - Home-relative: ``~/Downloads`` (shell expansion)
+    - Name only: ``Downloads`` (looks under home directory)
+
+    Parameters
+    ----------
+    value : str
+        The path string from the command line.
+
+    Returns
+    -------
+    Path
+        An absolute, resolved Path.
+
+    Raises
+    ------
+    ValueError
+        If the path does not exist in any form.
+    """
+    p = Path(value).expanduser()
+    if p.is_dir():
+        return p.resolve()
+
+    home = Path.home() / value
+    if home.is_dir():
+        return home.resolve()
+
+    raise ValueError(f"Directory not found: {value}")
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="maccleanup",
@@ -33,8 +68,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "path",
-        type=Path,
-        help="Directory to analyze and clean up.",
+        type=str,
+        help="Directory to analyze (e.g. ~/Downloads or just Downloads).",
     )
     parser.add_argument(
         "--execute",
@@ -45,6 +80,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Run execution logic without modifying the filesystem.",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Show detailed per-file listing instead of a summary.",
     )
     parser.add_argument(
         "--destination",
@@ -86,17 +126,16 @@ def main(argv: list[str] | None = None) -> None:
     """
     try:
         args = _parse_args(argv)
-        root = args.path.resolve()
+        root = _resolve_path(args.path)
 
-        if not root.is_dir():
-            print(f"Error: {root} is not a directory or does not exist.", file=sys.stderr)
-            sys.exit(EXIT_INVALID_ARGS)
+        # Detect terminal color support
+        use_color = sys.stdout.isatty()
 
         # --- Analysis phase ---
         review = analyze_directory(root)
 
         # --- Render and display ---
-        output = render(review)
+        output = render(review, verbose=args.verbose, use_color=use_color)
         print(output)
 
         # --- Execution phase (optional) ---

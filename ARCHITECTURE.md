@@ -6,258 +6,206 @@
 
 ## Philosophy
 
-Safety over automation.  
-Transparency over magic.  
-Readable over clever.  
-Simple over enterprise architecture.
+Safety over automation. Transparency over magic. Readable over clever. Simple over enterprise architecture.
 
-Dry-run by default. Never silently delete. Never make decisions for the user.  
-The application assists. It never takes control.
+Dry-run by default. Never silently modify files. Never make decisions for the user. The application assists — it never takes control.
 
 ---
 
-## High-Level Pipeline
+## Layered Pipeline
 
 ```
-User
-  │
-  ▼
-Scanner
-  │
-  ▼
-FileMetadata  (immutable — raw filesystem data)
-  │
-  ▼
-Classifier
-  │
-  ▼
-AnalysisResult  (derived — category, confidence, recommendation)
-  │
-  ▼
-DuplicateDetector
-  │
-  ▼
-DuplicateGroups  (SHA-256 verified groups — hashes stay here)
-  │
-  ▼
-Planner
-  │
-  ▼
-ActionPlan  (what should happen)
-  │
-  ▼
-══════════════════════════════
-        ScanResult
-══════════════════════════════
-  │                      │
-  ▼                      ▼
-Reporter              Executor
-(display)             (perform approved actions)
-                      │
-                      ▼
-                   Audit Log
+User Input (CLI)
+       │
+       ▼
+  Scanner           ─── Discovers files. Reads the filesystem.
+       │
+       ▼
+  Classifier        ─── Determines file type (Image, Archive, etc.).
+       │
+       ▼
+  Planner           ─── Applies policy rules. Recommends actions (Move, Leave).
+       │
+       ▼
+  ReviewBuilder     ─── Pairs analyses with recommendations. Produces ReviewModel.
+       │
+       ├────► Renderer     ─── Pure function. Formats ReviewModel as terminal text.
+       │
+       └────► Executor     ─── Only module that modifies the filesystem.
 ```
 
-`ScanResult` is the final product of the pipeline. Both the Reporter and the Executor read from it — the Reporter to display, the Executor to execute the approved `ActionPlan`.
+Every arrow flows forward. No module reaches backward into another stage's responsibility.
 
 ---
 
-## Project Structure
+## Module Map
 
 ```
 MacCleanUp/
 ├── cli/
-│   └── main.py              Entry point. CLI parsing. Workflow invocation.
+│   └── main.py              Entry point. CLI parsing, stdout, user confirmation, error boundary.
 │
 ├── core/
 │   ├── scanner.py            Filesystem traversal. Produces FileMetadata.
-│   ├── classifier.py         File type identification. Produces AnalysisResult.
-│   ├── duplicate_detector.py SHA-256 staged duplicate detection. Produces DuplicateGroups.
-│   ├── planner.py            Builds ActionPlan from analysis + policy.
-│   └── executor.py           Only module that modifies the filesystem.
+│   ├── classifier.py         File type identification. Pure function. Produces AnalysisResult.
+│   ├── planner.py            Policy engine. Pure function. Produces Recommendation.
+│   ├── review_builder.py     Aggregation. Pure function. Produces ReviewModel.
+│   ├── renderer.py           Terminal output. Pure function. Returns str.
+│   ├── executor.py           Filesystem operations. Only module with side effects.
+│   └── pipeline.py           Application composition. Wires modules into workflows.
 │
 ├── models/
 │   ├── metadata.py           FileMetadata (immutable).
-│   ├── analysis.py           AnalysisResult, DuplicateGroup.
-│   ├── actions.py            ActionPlan, CleanupAction.
-│   └── scan_result.py        ScanResult — final pipeline output.
-│
-├── report/
-│   └── reporter.py           Human-readable output generation.
-│
-├── config/
-│   └── policy.py             Cleanup rules, exclusion patterns, thresholds.
+│   ├── category.py           FileCategory enum.
+│   ├── analysis.py           AnalysisResult (immutable).
+│   ├── action.py             SuggestedAction enum.
+│   ├── recommendation.py     Recommendation (immutable).
+│   ├── category_summary.py   CategorySummary, group_by_category().
+│   ├── review.py             ReviewItem, ReviewModel (immutable).
+│   ├── execution.py          ExecutionStatus, ExecutionResult, ExecutionReport.
+│   ├── scan_error.py         ScanError model.
+│   └── scanner_result.py     ScannerResult model.
 │
 ├── utils/
-│   └── helpers.py            Small reusable functions (formatting, display).
+│   └── formatting.py         Pure formatting functions (format_bytes, format_percentage).
 │
-├── tests/                    Mirrors module structure.
+├── tests/                    Mirrors module structure. One test file per module.
+│
 ├── pyproject.toml
 ├── README.md
-├── LICENSE
-└── ARCHITECTURE.md
+├── ARCHITECTURE.md
+└── LICENSE
 ```
 
 ---
 
-## Module Responsibilities
+## Module Contracts
 
 ### Scanner
-- Only responsibility: discover files on the filesystem.
-- Produces immutable `FileMetadata` objects — no derived fields, no hashes.
-- Accepts a directory path and exclusion patterns (from policy).
-- Does **not** classify, hash, delete, or print.
-
-### FileMetadata
-- Pure filesystem facts: name, extension, path, size, created_at, modified_at.
-- **Immutable** — once created, never changes.
-- Contains no analysis, no category, no hash.
+- **Input:** A directory path.
+- **Output:** `ScannerResult` containing `FileMetadata` entries.
+- **Side effects:** Reads the filesystem. None beyond that.
+- **Never:** Classifies, plans, recommends, or modifies files.
 
 ### Classifier
-- Receives `FileMetadata`, determines what kind of file it is.
-- Produces `AnalysisResult` with: category, confidence, recommendation, reason.
-- Categories include: Installer, Archive, Image, Video, Study Material, Document, Project, Temporary File, etc.
-- Does **not** compute hashes, does **not** modify files.
-
-### DuplicateDetector
-- Only module that computes SHA-256 hashes.
-- Staged pipeline:
-  1. Group by file size.
-  2. Filter by extension.
-  3. Read contents → compute SHA-256.
-  4. Create `DuplicateGroup` objects.
-- Hashes exist **only** inside this module — they are a duplicate-detection concern, not a property of every file.
+- **Input:** `FileMetadata`.
+- **Output:** `AnalysisResult` (category + confidence score).
+- **Side effects:** None. Pure function.
+- **Never:** Reads the filesystem. Plans actions. Imports from Planner.
 
 ### Planner
-- Receives: `AnalysisResult`s, `DuplicateGroup`s, `Policy`.
-- Produces an `ActionPlan` — a collection of proposed actions.
-- Decides **what should happen**, never executes.
-- Actions include: Delete, Move to Review, Ignore, Report Only.
+- **Input:** `AnalysisResult`.
+- **Output:** `Recommendation` (suggested action + reason).
+- **Side effects:** None. Pure function.
+- **Never:** Classifies files. Reads the filesystem. Decides destinations.
 
-### ActionPlan
-- A structured collection of proposed `CleanupAction` items.
-- Presented to the user for review before any execution.
-- Contains: proposed deletes, moves, ignores, and their total estimated recovery.
+### ReviewBuilder
+- **Input:** List of `AnalysisResult` + `Recommendation` pairs.
+- **Output:** `ReviewModel` (immutable snapshot).
+- **Side effects:** None. Pure function.
+- **Never:** Reads the filesystem. Makes policy decisions.
 
-### ScanResult
-- The final output of the analysis pipeline.
-- Contains: scanned `FileMetadata`s, duplicate groups, `ActionPlan`, statistics, warnings, potential storage recovery.
-- Both the Reporter and the Executor consume this object.
-
-### Reporter
-- Generates human-readable output from `ScanResult`.
-- Shows: storage summary, category breakdown, duplicate groups, recommendations, estimated recovery.
-- Does **not** modify anything.
+### Renderer
+- **Input:** `ReviewModel`.
+- **Output:** Formatted terminal string.
+- **Side effects:** None. Pure function.
+- **Never:** Computes totals, calls the Executor, or prints.
 
 ### Executor
-- The **only** module permitted to modify the filesystem.
-- Receives an approved `ActionPlan`.
-- Operations: Move, Move to Trash, Delete.
-- Every destructive action requires explicit user confirmation.
-- Logs every modification to the audit log.
+- **Input:** List of `ReviewItem` + destination path.
+- **Output:** `ExecutionReport`.
+- **Side effects:** Only module permitted to modify the filesystem.
+- **Never:** Plans, classifies, prints, or prompts the user.
 
-### Policy
-- Central location for cleanup rules and application behaviour.
-- Controls: what to do with each category, exclusion patterns, file size thresholds, safety modes.
-- Changing policy never requires changing scanner, classifier, or planner logic.
+### Pipeline
+- **Input:** CLI arguments.
+- **Output:** `ReviewModel` or `ExecutionReport`.
+- **Side effects:** None. Composes pure modules.
+- **Never:** Prints, prompts, or modifies files.
 
-### Helpers
-- Small, reusable functions: human-readable file sizes, date formatting, terminal colours, prompt helpers.
-- If this file grows too large, it is split into focused modules — not before.
-
----
-
-## Cleanup Policy (Version 1)
-
-| Category | Action |
-|---|---|
-| Duplicate (SHA-256 verified) | Delete after confirmation |
-| Installer (.dmg, .pkg) | Delete after confirmation |
-| ZIP archive | Recommend deletion after extraction |
-| Large video | Report only |
-| Project folder | Move to Review |
-| `.git` directory | Never touch |
-| `.venv` directory | Report separately |
-| Hidden / system file | Ignore |
-| WhatsApp Image | Move to Review |
-| Screenshot | Move to Review |
-| JEE / Study Material | Move to Review |
-| College PDF / Report | Move to Review |
-| EchoInsight | Never touch |
-| DoodleDetective | Never touch |
-| BinanceCLITradingBot | Never touch |
-| Review folder | Excluded from future scans |
+### CLI
+- **Input:** Command-line arguments.
+- **Output:** Printed terminal text. Exit codes.
+- **Side effects:** All I/O (stdout, stderr, stdin).
+- **Never:** Classifies, plans, calculates, or modifies files.
 
 ---
 
-## The Review Folder
+## Design Decisions
 
-Instead of forcing deletion, MacCleanUp can organize clutter into a `Review/` folder on the Desktop:
+### Why pure functions?
+Every stage (except Scanner and Executor) is a pure function. This makes each module independently testable, deterministic, and composable. The pipeline is simply a sequence of function calls.
 
-```
-Desktop/
-└── Review/
-    ├── Screenshots/
-    ├── WhatsApp Images/
-    ├── Study Material/
-    └── Misc/
-```
+### Why no PipelineResult wrapper?
+The two-function API (`analyze_directory` + `execute_review`) eliminates the need for a return-type wrapper. The CLI composes these naturally without an intermediate object.
 
-This gives the user a single place to manually review organized files inside Finder.
+### Why two render modes?
+Default (concise) is a summary by category — it answers "what kinds of files are taking space?" The `--verbose` mode lists every file with its recommendation. This follows the common CLI pattern: concise by default, detailed on request.
 
-The Review folder is excluded from future scans to prevent double-counting.
+### Why flat destination layout?
+Files are moved to `destination / filename`. This is simple to reason about and avoids brittle path-computation logic. Directory structure preservation can be added later if needed.
+
+### Why no default exclusions?
+Exclusion policy is intentionally kept out of the pipeline. The Scanner accepts an `exclude_names` parameter, but v1 does not hardcode defaults. This keeps policy decisions explicit rather than hidden.
+
+---
+
+## What Belongs Where
+
+| Concern | Location |
+|---------|----------|
+| Filesystem discovery | `scanner.py` |
+| File type classification | `classifier.py` |
+| Policy rules | `planner.py` |
+| Data aggregation | `review_builder.py` |
+| Terminal formatting | `renderer.py` |
+| File move/delete | `executor.py` |
+| Module orchestration | `pipeline.py` |
+| Argument parsing, printing, errors | `cli/main.py` |
+| Number formatting | `utils/formatting.py` |
+
+---
+
+## Known Limitations
+
+### Warnings are orphaned
+`ScannerResult.warnings` records symlink skips and permission errors, but these are not propagated through `ReviewModel` or the Renderer. A future version should thread warnings to the user.
+
+### CategorySummary is mutable
+`ReviewModel` is frozen, but the `CategorySummary` objects it wraps are not. This does not affect the Renderer but violates the principle of full immutability.
+
+### No rollback
+The Executor performs one-way operations. Failed moves cannot be undone automatically. The `ExecutionReport` documents what happened; manual intervention may be needed for partial failures.
 
 ---
 
 ## Safety Guarantees
 
-1. **Dry-run by default.** No filesystem changes without explicit opt-in.
-2. **Explicit confirmation.** Every destructive action requires user approval.
-3. **Audit log.** Every modification is timestamped and recorded.
-4. **Immutable scan data.** Raw filesystem metadata never changes after capture.
-5. **Executor is the only writer.** No other module has filesystem write access.
+1. **Preview by default.** No filesystem changes without `--execute`.
+2. **Explicit confirmation.** Every destructive action requires `y/N` approval.
+3. **Immutable data.** `ReviewModel` is a frozen snapshot — the original scan data is never modified.
+4. **Executor is the only writer.** No other module has filesystem write access.
+5. **Error capture.** All per-file errors are captured in `ExecutionResult` objects. Exceptions never bubble up for filesystem errors.
 
 ---
 
-## Audit Log
+## Testing Philosophy
 
-Format: JSON Lines (`audit.jsonl`), one JSON object per line.
-
-```json
-{"timestamp": "2026-07-23T10:00:00", "action": "delete", "path": "/Users/kaustubh/Downloads/Office.pkg", "size": 1500000000}
-```
-
-This enables transparency, rollback planning, and future undo support.
+- **Pure functions** (Classifier, Planner, Renderer, formatting): Test with assertions on return values. No mocking.
+- **Scanner**: Test with `tmp_path` and real files. No mocking.
+- **Executor**: Mock `shutil.move` for unit tests. Use `tmp_path` for integration tests.
+- **Pipeline**: Integration tests with real modules. Mock only the Executor.
+- **CLI**: Inject `argv` instead of `sys.argv`. Test exit codes, not stdout strings.
 
 ---
 
-## Future Roadmap
-
-| Version | Focus |
-|---|---|
-| v1 | Scan, classify, detect duplicates, plan, report. Dry-run only. |
-| v2 | Move to Trash, configuration file, JSON output, colourised terminal, progress indicators. |
-| v3 | Undo support, HTML reports, scan history, Homebrew formula, CI/CD. |
-
----
-
-## Git Strategy
-
-- One module per commit.
-- Small, focused commits with clear messages.
-- No giant commits.
-- Suggested progression: `FileMetadata` → `Scanner` → Scanner tests → `Classifier` → `DuplicateDetector` → `Planner` → ...
-
----
-
-## Why No Enterprise Architecture?
+## Why Not Enterprise Architecture?
 
 This project intentionally avoids:
-
 - Plugin systems
 - Middleware pipelines
-- Dependency injection
-- Abstract base classes without a proven need
+- Dependency injection frameworks
+- Abstract base classes without proven need
 - Unnecessary design patterns
 
-Abstractions are introduced only after they solve a genuine problem. Premature abstraction adds complexity without value, and this project values readability and approachability above theoretical purity.
+Abstractions are introduced only after they solve a genuine problem. Premature abstraction adds complexity without value.
