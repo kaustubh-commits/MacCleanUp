@@ -133,3 +133,172 @@ Nothing in `models/` imports from `core/` or `cli/`.
 ### Engineering lesson learned
 
 Defining the vocabulary before implementing behaviour is uncomfortable — it feels like you're not making progress. But it surfaces design disagreements early (at the type level) rather than during integration (at the runtime level). The discussion about `SuggestedAction.UNCERTAIN` vs `Optional[SuggestedAction]` was resolved in five minutes because the model was concrete enough to debate.
+
+---
+
+## Commit 5 — Classifier
+
+**Date:** 2026-07-24
+
+**Summary:** Implemented the Classifier — a pure function mapping `FileMetadata → AnalysisResult`. The first piece of domain intelligence: converting objective filesystem facts into semantic understanding.
+
+### Key design decisions
+
+1. **Pure function, not a class.** No state, no configuration object. `classify(metadata) -> AnalysisResult`.
+2. **Extension-based mapping via dict.** A private `_EXTENSION_MAP` dict maps `.jpg → IMAGE`, `.zip → ARCHIVE`, etc. No if/elif chain.
+3. **Encapsulated extension lookup.** Uses `metadata.extension` rather than `metadata.path.suffix.lower()`, keeping normalization logic in one place.
+4. **Directories are UNKNOWN.** Early return for `is_directory` — prevents directory names with extensions (e.g., `images.tar`) from being classified.
+5. **Confidence is binary for v1:** `1.0` for known extensions, `0.0` for unknown.
+
+### Engineering note
+
+The hardest decision was what NOT to classify. `.gitignore` has an extension but it's not meaningful — the Classifier correctly returns UNKNOWN. `README` has no extension — also UNKNOWN. The classifier doesn't try to be smarter than its extension map.
+
+---
+
+## Commit 6 — Planner
+
+**Date:** 2026-07-24
+
+**Summary:** Implemented the Planner — a pure function mapping `AnalysisResult → Recommendation`. Converts semantic understanding into a recommendation via policy table.
+
+### Key design decisions
+
+1. **Tuple-based policy table.** `_POLICY[FileCategory] = (SuggestedAction, reason)` couples the action with its human-readable explanation.
+2. **Only ARCHIVE and INSTALLER trigger MOVE.** Everything else defaults to no action. Conservative by design.
+3. **Confidence gate.** If `confidence < 1.0`, action is always `None`. This protects against future confidence evolution.
+4. **No recommendation carries a destination.** The Planner says *what* should happen, not *where*. Destination is execution context.
+
+### Why this commit matters
+
+After Commit 6, the full reasoning pipeline exists: Scanner → Classifier → Planner. The application can now look at a file, understand what it is, and decide what to suggest.
+
+---
+
+## Commit 7 — Review Builder
+
+**Date:** 2026-07-24
+
+**Summary:** Introduced `ReviewItem` (orchestration pair of AnalysisResult + Recommendation) and `ReviewModel` (immutable snapshot). Transforms individual decisions into a reviewable report.
+
+### Key design decisions
+
+1. **ReviewItem is an orchestration type, not a domain model.** It pairs but doesn't embed — AnalysisResult and Recommendation remain independent.
+2. **ReviewModel uses tuples, not lists.** Full immutability: frozen dataclass + tuple collections.
+3. **Snapshot semantics.** `build_review()` copies inputs immediately — caller mutations don't affect the review.
+4. **Reuses `group_by_category()`.** No duplicate aggregation logic.
+5. **`reclaimable_size` only counts MOVE recommendations.** A single derived field that the renderer and CLI both need.
+
+---
+
+## Commit 8 — Renderer + Formatting
+
+**Date:** 2026-07-24
+
+**Summary:** Built the presentation layer. `render(review) -> str` is a pure function. Introduced `utils/formatting.py` for reusable number-to-string functions.
+
+### Architecture review insight
+
+The most valuable design decision was keeping formatting utilities (`format_bytes`, `format_percentage`) in their own module rather than inside the renderer. This means a future JSON exporter or GUI can reuse them without importing from the renderer module.
+
+### Key design decisions
+
+1. **One public function, four private section builders.** `_render_header`, `_render_categories`, `_render_recommendations`, `_render_footer`. No exported internals.
+2. **No `_FormatContext` abstraction.** Premature — a single `use_color` boolean threaded through function signatures is fine.
+3. **Renderer performs zero calculations.** All data comes from ReviewModel.
+
+---
+
+## Commit 9 — Executor
+
+**Date:** 2026-07-24
+
+**Summary:** The execution layer — the only module that modifies the filesystem. Receives `ReviewItem`s and a destination path, dispatches internally based on `SuggestedAction`.
+
+### Architecture review insight
+
+The key design debate was "who owns the destination path?" Three options were considered:
+1. **Parameter on `execute()`** — chosen for v1. Simplest, and destination is execution context, not policy.
+2. **Inside `Recommendation`** — rejected. The Planner recommends *what*, not *where*.
+3. **In a separate execution policy** — deferred. Could be introduced if per-file routing becomes necessary.
+
+### Key design decisions
+
+1. **Internal dispatch by SuggestedAction.** The Executor receives all ReviewItems and dispatches internally — MOVE, DELETE, LEAVE, or None. The CLI doesn't pre-filter.
+2. **Flat layout.** `destination / src.name`. No brittle relative path computation.
+3. **Collision policy: SKIP.** Never overwrite. Record in report.
+4. **All per-file errors captured in ExecutionResult.** Never raised. The Executor continues across failures.
+5. **`dry_run` inside `execute()`.** Single source of truth ensures the dry-run path and the execution path can never diverge.
+
+### Module invariant
+
+```python
+"""
+The Executor never decides. It only executes decisions that have already been made.
+"""
+```
+
+---
+
+## Commit 10 — Application Composition & CLI
+
+**Date:** 2026-07-24
+
+**Summary:** Wired all modules into a usable application. No new domain logic — just orchestration.
+
+### Key design decisions
+
+1. **Two functions, not one.** `analyze_directory(root) -> ReviewModel` (pure) and `execute_review(items, destination, dry_run) -> ExecutionReport` (thin wrapper). No `run()` function with an `execute` boolean flag mixing pure and impure concerns.
+2. **No PipelineResult wrapper.** The two-function API naturally eliminates the need.
+3. **No rendering in pipeline.** Pipeline returns data. CLI calls `render()` + `print()`. The Renderer stays independent.
+4. **Single error boundary in CLI.** `ValueError → exit 2`, `Exception → exit 3`. Pipeline lets exceptions propagate.
+5. **Exit codes:** 0 = success, 1 = cancelled, 2 = invalid args, 3 = runtime error.
+6. **`pyproject.toml` entry point:** `maccleanup = cli.main:main`.
+
+### Directory filtering decision
+
+The pipeline does not filter directories. They remain in ReviewModel with UNKNOWN category and no action. The renderer displays them in `total_files` but they never appear in recommendations. This is intentional and documented — changing it would require deciding whether `total_files` means "filesystem entries" or "actionable files."
+
+---
+
+## Commit 11 — UX Polish & Documentation
+
+**Date:** 2026-07-24
+
+**Summary:** The final polish pass. Improved the renderer with two-mode output (concise + verbose), added beginner-friendly path resolution, and wrote comprehensive documentation.
+
+### Key design decisions
+
+1. **Two render modes.** `verbose=False` (default) shows a concise summary by category. `verbose=True` shows every file with its recommendation. Follows the CLI convention: concise by default, detailed on request.
+2. **Recommendations grouped by category, not action.** Users think in terms of "what kinds of files" not "what actions apply." ARCHIVE and INSTALLER both trigger MOVE, but showing them by category gives more useful information.
+3. **No percentages.** Users care about counts and sizes. Percentages made the report look analytical rather than actionable.
+4. **`_resolve_path()` in CLI.** Accepts `Downloads`, `~/Downloads`, and `/absolute/path`. Stays entirely in the CLI layer — the pipeline never knows about path resolution.
+5. **Color auto-detection.** `sys.stdout.isatty()` controls the default. `use_color` is still an explicit parameter — the test suite passes `use_color=False` to guarantee plain-text output.
+
+### Final project state
+
+```
+Filesystem → Scanner → FileMetadata → Classifier → AnalysisResult → Planner → Recommendation
+                                                                                     ↓
+                                                                              ReviewItem
+                                                                                     ↓
+                                                                              ReviewBuilder
+                                                                                     ↓
+                                                                              ReviewModel
+                                                                               /        \
+                                                                              /          \
+                                                                             ↓            ↓
+                                                                        Renderer      Executor
+                                                                             ↓            ↓
+                                                                       CLI (stdout)  ExecutionReport
+```
+
+**191 tests, all passing, zero regressions across 11 commits.**
+
+### What was intentionally deferred
+
+- **Warning propagation.** `ScannerResult.warnings` exists but never reaches the user. Should be addressed before v2.
+- **CategorySummary mutability.** ReviewModel is frozen but the summaries it wraps are not. A small refactor commit could fix this.
+- **Default exclusions.** No hardcoded exclusion set. The Scanner accepts `exclude_names` but the CLI doesn't pass any by default.
+- **Folder picker for `maccleanup` without arguments.** A native macOS dialog would be a nice v2 enhancement.
+- **Progress indicators and logging.** The pipeline is fast enough that progress bars aren't needed for v1.
