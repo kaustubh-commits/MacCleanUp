@@ -23,8 +23,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kaustubh/mac-cleanup"
-Repository = "https://github.com/kaustubh/mac-cleanup"
+Homepage = "https://github.com/kaustubh-commits/MacCleanUp"
+Repository = "https://github.com/kaustubh-commits/MacCleanUp"
 
 [project.scripts]
 maccleanup = "cli.main:main"

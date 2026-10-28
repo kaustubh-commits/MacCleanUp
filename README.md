@@ -3,31 +3,36 @@
 **A transparent filesystem audit and cleanup assistant for macOS.**
 
 ```bash
-pip install mac-cleanup
+git clone https://github.com/kaustubh-commits/MacCleanUp.git
+cd MacCleanUp
+pip install .
 maccleanup Downloads
 ```
 
 ```
 Scan Summary
 ═══════════════════════════════════════════════
-Scanned 127 files (4.5 GB)
+Scanned 26 files (6.5 GB)
 
 Files by Category
-────────────────────────────────────────────────
-  IMAGE           12 files      2.1 GB
-  PROJECT          2 files    980.4 MB
-  DOCUMENT         1 files    420.5 MB
-  ARCHIVE         22 files      4.7 GB
-  INSTALLER        5 files      3.8 GB
+───────────────────────────────────────────────
+  INSTALLER        3 files      3.5 GB
+  ARCHIVE          3 files      2.2 GB
+  VIDEO            1 files    705.7 MB
+  AUDIO            1 files     45.8 MB
+  IMAGE           14 files     34.7 MB
+  PDF              1 files      2.3 MB
+  DOCUMENT         2 files    181.6 KB
+  PROJECT          1 files      3.9 KB
 
 Recommendations
-────────────────────────────────────────────────
-  ARCHIVE         22 files      4.7 GB
-  INSTALLER        5 files      3.8 GB
+───────────────────────────────────────────────
+  INSTALLER        3 files      3.5 GB
+  ARCHIVE          3 files      2.2 GB
 
 Summary
 ═══════════════════════════════════════════════
-Reclaimable space: 8.5 GB
+Reclaimable space: 5.7 GB
 Use --execute to apply these recommendations.
 ```
 
@@ -37,12 +42,27 @@ Safety over automation. Transparency over magic. Readable over clever.
 
 Dry-run by default. Never silently delete. Never make decisions for the user. MacCleanUp assists — it never takes control.
 
+## Installation
+
+MacCleanUp is not published on PyPI. (The `mac-cleanup` package on PyPI is an unrelated project.) Install it from source; Python 3.11+ is required:
+
+```bash
+git clone https://github.com/kaustubh-commits/MacCleanUp.git
+cd MacCleanUp
+python3 -m venv .venv && source .venv/bin/activate
+pip install .
+```
+
+To work on the code, install it in editable mode and run the test suite:
+
+```bash
+pip install -e . pytest
+python -m pytest
+```
+
 ## Quick Start
 
 ```bash
-# Install
-pip install mac-cleanup
-
 # Preview what MacCleanUp would recommend
 maccleanup ~/Downloads
 
