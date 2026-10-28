@@ -37,8 +37,8 @@ def analyze_directory(root: Path) -> ReviewModel:
     Returns
     -------
     ReviewModel
-        Immutable snapshot of the scan. Includes all scanned entries
-        (directories included — they have category UNKNOWN, action None).
+        Immutable snapshot of the scan. Contains files only — the
+        scanner traverses directories but does not report them.
 
     Raises
     ------

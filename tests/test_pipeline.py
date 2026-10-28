@@ -29,10 +29,23 @@ class TestAnalyzeDirectory:
         review = analyze_directory(tmp_path)
         assert review.total_files == 2
 
-    def test_includes_directories(self, tmp_path: Path) -> None:
+    def test_excludes_directories(self, tmp_path: Path) -> None:
         (tmp_path / "sub").mkdir()
         review = analyze_directory(tmp_path)
-        assert review.total_files == 1  # the directory itself
+        assert review.total_files == 0
+
+    def test_nested_subfolders_count_only_files(self, tmp_path: Path) -> None:
+        (tmp_path / "photos" / "2025").mkdir(parents=True)
+        (tmp_path / "photos" / "2025" / "a.jpg").write_bytes(b"\xff\xd8\xff")
+        (tmp_path / "photos" / "b.jpg").write_bytes(b"\xff\xd8\xff")
+        (tmp_path / "setup.dmg").write_bytes(b"dmg")
+
+        review = analyze_directory(tmp_path)
+
+        assert review.total_files == 3
+        assert review.total_size == 9
+        categories = {s.category for s in review.categories}
+        assert categories == {FileCategory.IMAGE, FileCategory.INSTALLER}
 
     def test_files_have_categories(self, tmp_path: Path) -> None:
         (tmp_path / "photo.jpg").write_bytes(b"\xff\xd8\xff")

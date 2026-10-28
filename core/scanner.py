@@ -23,7 +23,10 @@ def scan(
     root: Path,
     exclude_names: set[str] | None = None,
 ) -> ScannerResult:
-    """Walk *root* and produce FileMetadata for every entry discovered.
+    """Walk *root* and produce FileMetadata for every file discovered.
+
+    Directories are traversed but not yielded — only files appear in
+    the result.
 
     Parameters
     ----------
@@ -109,8 +112,8 @@ def _handle_entry(
     Responsibilities:
     - Skip symlinks (all types — we do not follow them).
     - Skip entries whose name is in the exclusion set.
-    - Recurse into directories (unless excluded).
-    - Yield FileMetadata for readable entries.
+    - Recurse into directories (unless excluded) without yielding them.
+    - Yield FileMetadata for readable files.
     - Record ScanError for entries that cannot be read.
     """
     # --- Skip symlinks entirely ---
@@ -151,8 +154,6 @@ def _handle_entry(
     # --- Recurse into directories ---
     if is_dir:
         yield from _walk(Path(entry.path), exclude_names, warnings)
-        # Also yield the directory entry itself so it appears in results
-        yield from _yield_entry(entry, is_dir=True, warnings=warnings)
         return
 
     # --- Yield file entry ---

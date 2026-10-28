@@ -158,3 +158,7 @@ def main(argv: list[str] | None = None) -> None:
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
+
+
+if __name__ == "__main__":
+    main()

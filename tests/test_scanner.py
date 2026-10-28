@@ -56,18 +56,29 @@ class TestBasicScanning:
     def test_empty_directory(self, tmp_path: Path) -> None:
         (tmp_path / "empty").mkdir()
         result = scan(tmp_path)
-        # The empty directory itself should appear
-        dir_names = {e.name for e in result.entries if e.is_directory}
-        assert "empty" in dir_names
+        # Directories are traversed but never reported as entries
+        assert result.entries == []
 
     def test_root_with_single_subdirectory(self, tmp_path: Path) -> None:
         (tmp_path / "sub").mkdir()
         (tmp_path / "sub" / "file.txt").write_text("content")
         result = scan(tmp_path)
-        file_names = {e.name for e in result.entries if not e.is_directory}
-        dir_names = {e.name for e in result.entries if e.is_directory}
-        assert file_names == {"file.txt"}
-        assert "sub" in dir_names
+        names = {e.name for e in result.entries}
+        assert names == {"file.txt"}
+
+    def test_nested_subfolders_yield_only_files(self, tmp_path: Path) -> None:
+        (tmp_path / "top.txt").write_text("top")
+        (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+        (tmp_path / "a" / "one.pdf").write_bytes(b"%PDF")
+        (tmp_path / "a" / "b" / "two.zip").write_bytes(b"PK")
+        (tmp_path / "a" / "b" / "c" / "three.png").write_bytes(b"\x89PNG")
+        (tmp_path / "empty").mkdir()
+
+        result = scan(tmp_path)
+
+        names = {e.name for e in result.entries}
+        assert names == {"top.txt", "one.pdf", "two.zip", "three.png"}
+        assert all(not e.is_directory for e in result.entries)
 
 
 # =========================================================================
@@ -86,9 +97,8 @@ class TestExclusions:
 
         result = scan(tmp_path, exclude_names={".git"})
         names = {e.name for e in result.entries}
-        assert ".git" not in names
-        assert "keep" in names
-        assert "a.txt" in names
+        assert "config" not in names  # contents of excluded dir are skipped
+        assert names == {"a.txt"}
 
     def test_exclude_file_by_name(self, tmp_path: Path) -> None:
         (tmp_path / "a.txt").write_text("hello")
@@ -112,10 +122,11 @@ class TestExclusions:
 
     def test_no_exclusions_given(self, tmp_path: Path) -> None:
         (tmp_path / ".git").mkdir()
+        (tmp_path / ".git" / "HEAD").write_text("ref: main")
         (tmp_path / "file.txt").write_text("hello")
         result = scan(tmp_path)
         names = {e.name for e in result.entries}
-        assert ".git" in names  # included because no exclusions were passed
+        assert "HEAD" in names  # traversed because no exclusions were passed
 
     def test_nested_excluded_directory(self, tmp_path: Path) -> None:
         """A .venv deep inside the tree should also be skipped."""
@@ -160,10 +171,8 @@ class TestSymlinks:
         link.symlink_to(target, target_is_directory=True)
 
         result = scan(tmp_path)
-        names = {e.name for e in result.entries}
-        assert "real_dir" in names
-        assert "file.txt" in names  # real contents are present
-        assert "link_to_dir" not in names
+        paths = {e.path for e in result.entries}
+        assert paths == {target / "file.txt"}  # found once, via the real dir only
         # All symlinks record a warning
         assert any("symlink" in w.message for w in result.warnings)
 
@@ -300,16 +309,9 @@ class TestEdgeCases:
         (tmp_path / ".git" / "HEAD").write_text("ref: main")
 
         result = scan(tmp_path, exclude_names={".git"})
-        file_names = {e.name for e in result.entries if not e.is_directory}
-        dir_names = {e.name for e in result.entries if e.is_directory}
+        names = {e.name for e in result.entries}
 
-        assert "README.md" in file_names
-        assert "main.py" in file_names
-        assert "utils.py" in file_names
-        assert "index.md" in file_names
-        assert "src" in dir_names
-        assert "docs" in dir_names
-        assert ".git" not in dir_names
+        assert names == {"README.md", "main.py", "utils.py", "index.md"}
 
 
 # =========================================================================
@@ -328,12 +330,8 @@ class TestScannerResultProperties:
 
         result = scan(tmp_path)
         assert result.total_files == 3
-        assert result.total_directories == 1  # tmp_path itself + sub? No, only sub
-        # Actually tmp_path itself is the root, not an entry
-        # So only "sub" is counted as a directory
-        # Wait — the scanner yields directories it encounters. "sub" is yielded.
-        # tmp_path is NOT yielded because it's the root passed to scan().
-        assert result.total_directories == 1
+        # Directories are traversed, not reported
+        assert result.total_directories == 0
 
     def test_total_files_only(self, tmp_path: Path) -> None:
         (tmp_path / "a.txt").write_text("a")
